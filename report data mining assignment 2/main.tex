@@ -38,7 +38,7 @@
 
 \textbf{Repository:} \url{https://github.com/MokhtarBaWahal/data-mining-assignment2}
 
-This report covers the design, evaluation, and deployment of a movie recommender system on the MovieLens-derived dataset provided. Two models are compared — user-based collaborative filtering and SVD matrix factorisation — before the best model is used to generate personalised recommendations for all test users.
+A 98.3\% sparse rating matrix makes neighbourhood-based methods unreliable for ranking: most unseen items receive a flat default score. This report quantifies exactly why, compares user-based collaborative filtering with SVD matrix factorisation, and deploys the superior model to generate personalised recommendations for all test users.
 
 \section*{1. Data and Preprocessing}
 
@@ -46,7 +46,7 @@ The training set contains \textbf{97,801 ratings} from \textbf{600 users} across
 
 \textbf{Movies.} Genre labels were one-hot encoded into 20 binary columns. The release year was extracted from the title string with a regex. Rows with missing genres were imputed with a zero vector.
 
-\textbf{Ratings.} Timestamps were decomposed into \texttt{rating\_year} and \texttt{rating\_month}. Two normalised variants were computed: \texttt{rating\_norm} (Min-Max, range $[0,1]$) and \texttt{rating\_zscore} $=(r-\mu)/\sigma$. The raw \texttt{rating} column is retained unchanged, as both recommendation models operate on original 0.5--5.0 scale values.
+\textbf{Ratings.} Timestamps were decomposed into \texttt{rating\_year} and \texttt{rating\_month}. Normalised variants (\texttt{rating\_norm} via Min-Max; \texttt{rating\_zscore}) were added for potential downstream use. Both models operate on the raw 0.5--5.0 ratings.
 
 \section*{2. Task 1 — Models and Evaluation}
 
@@ -114,9 +114,11 @@ the tight spread across folds confirms stability.}
 
 \textbf{Precision and Recall.} The contrast for ranking metrics is far more pronounced. UserKNN's Precision@10 is $\approx 0.0002$ — essentially zero — because 98.3\% sparsity means only $\sim$500 of 9,517 unseen items per user have any neighbour signal. The remaining $\sim$9,000 items all receive the same default score (the user's mean), making the top-10 ranking random for the vast majority of the catalogue (Figure~\ref{fig:sparsity}). SVD reconstructs scores for \emph{every} item via latent factors, yielding a fully ordered list and achieving $\mathbf{270\times}$ higher Precision@10.
 
-\textbf{Efficiency.} UserKNN requires no training but its inference dominates at $\sim$12.8\,s/fold due to pairwise similarity look-ups. SVD trains in $\sim$0.33\,s/fold and then scores each item in $O(k)$ time.
+\textbf{Efficiency.} UserKNN requires no training but inference costs $\sim$12.8\,s/fold (pairwise look-ups). SVD trains in $\sim$0.33\,s and scores each item in $O(k)$.
 
-\textbf{Personalization.} SVD is highly personalised through individual bias terms $b_u$ and latent preference vectors $\mathbf{p}_u$. UserKNN personalization degrades as sparsity increases, since fewer reliable neighbours can be found.
+\textbf{Personalization.} SVD captures individual bias terms $b_u$ and latent preference vectors $\mathbf{p}_u$, yielding personalised lists even for users with few ratings. UserKNN personalization degrades as sparsity increases.
+
+\textbf{Diversity.} SVD's top-10 lists achieve a mean Intra-List Diversity (ILD) of \textbf{0.681} $\pm$ 0.059, measured as $1$ minus the average pairwise cosine similarity of genre vectors within each list. This indicates that the recommendations span multiple genres rather than concentrating on a single one.
 
 \begin{figure}[h]
 \centering
@@ -130,15 +132,39 @@ The near-empty rows illustrate why most items get a flat default score under Use
 
 \subsection*{3.1 Model Selection and Recommendation Strategy}
 
-SVD was selected as the final model based on its superior performance on all three evaluation metrics. For each of the 100 test users with a training history, the SVD model trained on the full dataset predicts scores for all movies not yet rated by that user. Cornac's \texttt{recommend()} method enforces \texttt{remove\_seen=True} internally, and the top-10 by predicted score are written to \texttt{data/raw/ratings\_test.csv}.
+SVD was selected based on its superior performance on all three metrics. The model is retrained on the full dataset, and for each test user it predicts scores for all unseen movies (\texttt{remove\_seen=True}). The top-10 by predicted score are written to \texttt{ratings\_test.csv}. Table~\ref{tab:recs} shows two illustrative examples.
+
+\begin{table}[h]
+\centering
+\caption{Sample SVD recommendations for two test users.}
+\label{tab:recs}
+\small
+\begin{tabular}{p{3.4cm}p{4.2cm}}
+\toprule
+\textbf{User 7 — rated 5\,\bigstar} & \textbf{SVD recommends} \\
+\midrule
+Star Wars (1977) & Shawshank Redemption (1994) \\
+Forrest Gump (1994) & Lawrence of Arabia (1962) \\
+Jurassic Park (1993) & Godfather, The (1972) \\
+Silence of the Lambs (1991) & Rear Window (1954) \\
+\midrule
+\textbf{User 25 — rated 5\,\bigstar} & \textbf{SVD recommends} \\
+\midrule
+Schindler's List (1993) & Dr.\ Strangelove (1964) \\
+Raiders of the Lost Ark (1981) & Lawrence of Arabia (1962) \\
+Saving Private Ryan (1998) & Godfather, The (1972) \\
+Matrix, The (1999) & Streetcar Named Desire (1951) \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection*{3.2 Cold-Start Handling}
 
-Ten of the 100 test users have no training ratings whatsoever. SVD cannot produce personalised scores for them (no latent vector $\mathbf{p}_u$ was learned). A \textbf{popularity-based fallback} is applied: movies are ranked by their mean training-set rating among titles with at least 10 ratings, and the global top-10 from this filtered list are recommended. The minimum-10-ratings filter prevents low-quality titles with artificially high means from appearing. The main limitation is that all cold-start users receive the same list. A richer strategy — eliciting genre preferences or using the one-hot encoded genre features from preprocessing — could enable personalisation, but this was out of scope here.
+Ten of the 100 test users have no training ratings whatsoever. SVD cannot produce personalised scores for them (no latent vector $\mathbf{p}_u$ was learned). A \textbf{popularity-based fallback} is applied: movies are ranked by mean training-set rating among titles with $\geq$10 ratings, and the global top-10 are recommended. The minimum-10-ratings filter prevents noisy titles with artificially high means. All cold-start users receive the same list. A content-based fallback using the 19 one-hot genre columns from preprocessing (e.g.\ recommending highly rated movies in the user's preferred genre, elicited at sign-up) could personalise these lists but was not implemented.
 
 \subsection*{3.3 Performance Estimate}
 
-Since the true ratings in \texttt{ratings\_test.csv} are unknown, performance is estimated from Task~1's 5-fold CV on held-out training data. The expected Precision@10 is \textbf{0.054} and expected Recall@10 is \textbf{0.032}. These estimates are conservative: CV ranks items only within the held-out fold, whereas the deployed model ranks the full unseen catalogue, giving it more opportunity to surface relevant items. The cold-start users receive non-personalised recommendations, so their individual quality will be lower.
+Since the true test ratings are unknown, performance is estimated from the 5-fold CV: expected Precision@10 = \textbf{0.054}, Recall@10 = \textbf{0.032}, RMSE = \textbf{0.856}. These are conservative: CV ranks items only within the held-out fold, whereas the deployed model ranks the full unseen catalogue. Cold-start users (10\% of test set) receive non-personalised popularity lists, lowering their individual quality.
 
 \begin{figure}[h]
 \centering
